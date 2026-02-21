@@ -30,7 +30,7 @@ curl -s -X POST http://localhost:3000/auth/register \
 # 🔐 AUTH — LOGIN (with email)
 # ============================================================
 
-curl -s -X POST http://localhost:3000/auth/login \
+curl -s -X POST  https://carded-backend.vercel.app/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "emailOrPhone": "john@example.com",
