@@ -31,21 +31,9 @@ const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const allowedMime = [
-      'image/jpeg',
-      'image/png',
-      'image/webp'
-    ];
-
-    const allowedExt = ['.jpg', '.jpeg', '.png', '.webp'];
-
-    const ext = path.extname(file.originalname).toLowerCase();
-
-    if (allowedMime.includes(file.mimetype) && allowedExt.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only JPEG, PNG, and WEBP images are allowed'));
-    }
+      console.log("MIME TYPE:", file.mimetype);
+  console.log("ORIGINAL NAME:", file.originalname);
+  cb(null, true); // temporarily allow all
   },
 });
 
