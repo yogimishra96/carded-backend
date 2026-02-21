@@ -1,13 +1,38 @@
 const express = require('express');
+const multer  = require('multer');
+const path    = require('path');
+const fs      = require('fs');
 const { query } = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
 
-const router = express.Router();
+const router   = express.Router();
 const MAX_CARDS = 5;
 
-router.use(authMiddleware);
+// ─── Multer config — store in /tmp (Vercel compatible) ───────
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    const dir = '/tmp/carded-uploads';
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (_req, file, cb) => {
+    const ext  = path.extname(file.originalname).toLowerCase() || '.jpg';
+    const name = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
+    cb(null, name);
+  },
+});
 
-// ─── Helper: map DB row → API response shape ──────────────────
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, and WEBP images are allowed'));
+  },
+});
+
+// ─── Row → API shape ──────────────────────────────────────────
 function toCard(row) {
   return {
     id:            row.id,
@@ -22,10 +47,13 @@ function toCard(row) {
     website:       row.website,
     address:       row.address,
     templateIndex: row.template_index,
+    photoUrl:      row.photo_url || '',
     createdAt:     row.created_at,
     updatedAt:     row.updated_at,
   };
 }
+
+router.use(authMiddleware);
 
 // ─── GET /cards ───────────────────────────────────────────────
 router.get('/', async (req, res) => {
@@ -36,7 +64,7 @@ router.get('/', async (req, res) => {
     );
     return res.json({ success: true, cards: result.rows.map(toCard) });
   } catch (err) {
-    console.error('Get cards error:', err);
+    console.error('Get cards:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
@@ -48,12 +76,10 @@ router.get('/:id', async (req, res) => {
       'SELECT * FROM cards WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'Card not found' });
-    }
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Card not found' });
     return res.json({ success: true, card: toCard(result.rows[0]) });
   } catch (err) {
-    console.error('Get card error:', err);
+    console.error('Get card:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
@@ -61,53 +87,31 @@ router.get('/:id', async (req, res) => {
 // ─── POST /cards ──────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {
-    // Enforce card limit
-    const countRes = await query(
-      'SELECT COUNT(*) FROM cards WHERE user_id = $1',
-      [req.userId]
-    );
+    const countRes = await query('SELECT COUNT(*) FROM cards WHERE user_id = $1', [req.userId]);
     if (parseInt(countRes.rows[0].count) >= MAX_CARDS) {
-      return res.status(403).json({
-        success: false,
-        message: `Card limit reached. Maximum ${MAX_CARDS} cards allowed.`,
-      });
+      return res.status(403).json({ success: false, message: `Card limit reached. Maximum ${MAX_CARDS} cards allowed.` });
     }
 
     const { nickname, name, designation, company, email1, email2,
-            phone1, phone2, website, address, templateIndex } = req.body;
+            phone1, phone2, website, address, templateIndex, photoUrl } = req.body;
 
     if (!name || !designation || !company || !email1 || !phone1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Required: name, designation, company, email1, phone1',
-      });
+      return res.status(400).json({ success: false, message: 'Required: name, designation, company, email1, phone1' });
     }
 
     const result = await query(
       `INSERT INTO cards
          (user_id, nickname, name, designation, company,
-          email1, email2, phone1, phone2, website, address, template_index)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          email1, email2, phone1, phone2, website, address, template_index, photo_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
-      [
-        req.userId,
-        nickname || name,
-        name,
-        designation,
-        company,
-        email1,
-        email2 || '',
-        phone1,
-        phone2 || '',
-        website || '',
-        address || '',
-        templateIndex ?? 0,
-      ]
+      [req.userId, nickname || name, name, designation, company,
+       email1, email2 || '', phone1, phone2 || '', website || '', address || '',
+       templateIndex ?? 0, photoUrl || '']
     );
-
     return res.status(201).json({ success: true, card: toCard(result.rows[0]) });
   } catch (err) {
-    console.error('Create card error:', err);
+    console.error('Create card:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
@@ -115,7 +119,46 @@ router.post('/', async (req, res) => {
 // ─── PUT /cards/:id ───────────────────────────────────────────
 router.put('/:id', async (req, res) => {
   try {
-    // Check card exists and belongs to user
+    const existing = await query(
+      'SELECT id FROM cards WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.userId]
+    );
+    if (existing.rowCount === 0) return res.status(404).json({ success: false, message: 'Card not found' });
+
+    const { nickname, name, designation, company, email1, email2,
+            phone1, phone2, website, address, templateIndex, photoUrl } = req.body;
+
+    const result = await query(
+      `UPDATE cards SET
+         nickname       = COALESCE($1,  nickname),
+         name           = COALESCE($2,  name),
+         designation    = COALESCE($3,  designation),
+         company        = COALESCE($4,  company),
+         email1         = COALESCE($5,  email1),
+         email2         = COALESCE($6,  email2),
+         phone1         = COALESCE($7,  phone1),
+         phone2         = COALESCE($8,  phone2),
+         website        = COALESCE($9,  website),
+         address        = COALESCE($10, address),
+         template_index = COALESCE($11, template_index),
+         photo_url      = COALESCE($12, photo_url)
+       WHERE id = $13 AND user_id = $14
+       RETURNING *`,
+      [nickname, name, designation, company, email1, email2,
+       phone1, phone2, website, address, templateIndex, photoUrl,
+       req.params.id, req.userId]
+    );
+    return res.json({ success: true, card: toCard(result.rows[0]) });
+  } catch (err) {
+    console.error('Update card:', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ─── POST /cards/:id/photo — upload profile photo ────────────
+router.post('/:id/photo', upload.single('photo'), async (req, res) => {
+  try {
+    // Verify card belongs to user
     const existing = await query(
       'SELECT id FROM cards WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
@@ -124,44 +167,46 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Card not found' });
     }
 
-    const { nickname, name, designation, company, email1, email2,
-            phone1, phone2, website, address, templateIndex } = req.body;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No photo uploaded' });
+    }
 
-    const result = await query(
-      `UPDATE cards SET
-         nickname       = COALESCE($1, nickname),
-         name           = COALESCE($2, name),
-         designation    = COALESCE($3, designation),
-         company        = COALESCE($4, company),
-         email1         = COALESCE($5, email1),
-         email2         = COALESCE($6, email2),
-         phone1         = COALESCE($7, phone1),
-         phone2         = COALESCE($8, phone2),
-         website        = COALESCE($9, website),
-         address        = COALESCE($10, address),
-         template_index = COALESCE($11, template_index)
-       WHERE id = $12 AND user_id = $13
-       RETURNING *`,
-      [
-        nickname,
-        name,
-        designation,
-        company,
-        email1,
-        email2,
-        phone1,
-        phone2,
-        website,
-        address,
-        templateIndex,
-        req.params.id,
-        req.userId,
-      ]
+    // ── In production: upload to Cloudinary / S3 / Supabase Storage ──
+    // For MVP on Vercel: we store the path and serve from /tmp
+    // NOTE: /tmp is ephemeral on Vercel serverless — for prod use Cloudinary:
+    //   const cloudinary = require('cloudinary').v2;
+    //   const result = await cloudinary.uploader.upload(req.file.path);
+    //   const photoUrl = result.secure_url;
+
+    // MVP: serve the file via a dedicated route (works locally)
+    const photoUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/cards/${req.params.id}/photo/file`;
+
+    // Save reference in DB
+    await query(
+      'UPDATE cards SET photo_url = $1 WHERE id = $2 AND user_id = $3',
+      [photoUrl, req.params.id, req.userId]
     );
 
-    return res.json({ success: true, card: toCard(result.rows[0]) });
+    // Store filename in a simple map for serving (ephemeral)
+    global.photoMap = global.photoMap || {};
+    global.photoMap[req.params.id] = req.file.path;
+
+    return res.json({ success: true, photoUrl });
   } catch (err) {
-    console.error('Update card error:', err);
+    console.error('Upload photo:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+  }
+});
+
+// ─── GET /cards/:id/photo/file — serve uploaded photo ────────
+router.get('/:id/photo/file', async (req, res) => {
+  try {
+    const filePath = (global.photoMap || {})[req.params.id];
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'Photo not found' });
+    }
+    return res.sendFile(filePath);
+  } catch (err) {
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
@@ -173,12 +218,10 @@ router.delete('/:id', async (req, res) => {
       'DELETE FROM cards WHERE id = $1 AND user_id = $2 RETURNING id',
       [req.params.id, req.userId]
     );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'Card not found' });
-    }
+    if (result.rowCount === 0) return res.status(404).json({ success: false, message: 'Card not found' });
     return res.json({ success: true, message: 'Card deleted' });
   } catch (err) {
-    console.error('Delete card error:', err);
+    console.error('Delete card:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });

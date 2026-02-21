@@ -89,3 +89,7 @@ DROP TRIGGER IF EXISTS set_collected_updated_at ON collected_cards;
 CREATE TRIGGER set_collected_updated_at
   BEFORE UPDATE ON collected_cards
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ─── Add photo_url to cards (run if tables already exist) ────
+ALTER TABLE cards ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT '';
