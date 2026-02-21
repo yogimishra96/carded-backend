@@ -4,7 +4,12 @@ const path    = require('path');
 const fs      = require('fs');
 const { query } = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
-
+const cloudinary = require('cloudinary').v2;
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 const router   = express.Router();
 const MAX_CARDS = 5;
 
@@ -155,14 +160,15 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ─── POST /cards/:id/photo — upload profile photo ────────────
+// POST /cards/:id/photo
 router.post('/:id/photo', upload.single('photo'), async (req, res) => {
   try {
-    // Verify card belongs to user
+    // Verify ownership
     const existing = await query(
       'SELECT id FROM cards WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
+
     if (existing.rowCount === 0) {
       return res.status(404).json({ success: false, message: 'Card not found' });
     }
@@ -171,30 +177,36 @@ router.post('/:id/photo', upload.single('photo'), async (req, res) => {
       return res.status(400).json({ success: false, message: 'No photo uploaded' });
     }
 
-    // ── In production: upload to Cloudinary / S3 / Supabase Storage ──
-    // For MVP on Vercel: we store the path and serve from /tmp
-    // NOTE: /tmp is ephemeral on Vercel serverless — for prod use Cloudinary:
-    //   const cloudinary = require('cloudinary').v2;
-    //   const result = await cloudinary.uploader.upload(req.file.path);
-    //   const photoUrl = result.secure_url;
+    // Upload to Cloudinary
+    const result = await cloudinary.uploader.upload(req.file.path, {
+      folder: 'carded/profile-photos',
+      public_id: `card_${req.params.id}`,
+      overwrite: true,
+      resource_type: 'image'
+    });
 
-    // MVP: serve the file via a dedicated route (works locally)
-    const photoUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/cards/${req.params.id}/photo/file`;
+    const photoUrl = result.secure_url;
 
-    // Save reference in DB
+    // Save URL in DB
     await query(
       'UPDATE cards SET photo_url = $1 WHERE id = $2 AND user_id = $3',
       [photoUrl, req.params.id, req.userId]
     );
 
-    // Store filename in a simple map for serving (ephemeral)
-    global.photoMap = global.photoMap || {};
-    global.photoMap[req.params.id] = req.file.path;
+    // Remove temp file
+    fs.unlinkSync(req.file.path);
 
-    return res.json({ success: true, photoUrl });
+    return res.json({
+      success: true,
+      photoUrl
+    });
+
   } catch (err) {
     console.error('Upload photo:', err);
-    return res.status(500).json({ success: false, message: err.message || 'Internal server error' });
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Internal server error'
+    });
   }
 });
 
