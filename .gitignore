@@ -1,4 +1,28 @@
+# ── Dependencies ─────────────────────────────────────────────
 node_modules/
-data/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Environment variables (NEVER commit) ─────────────────────
 .env
+.env.local
+.env.development
+.env.production
+
+# ── Old file-system storage (no longer used) ─────────────────
+data/
+
+# ── Logs ─────────────────────────────────────────────────────
+logs/
 *.log
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor ───────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
