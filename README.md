@@ -1,3 +1,89 @@
+# 🃏 Carded Backend — Express.js + PostgreSQL (Neon) + Vercel
+
+---
+
+## 📁 Structure
+
+```
+src/
+├── index.js           → app entry (local + Vercel export)
+├── db/
+│   ├── pool.js        → pg connection pool
+│   ├── schema.sql     → run once on Neon to create tables
+│   └── migrate.js     → CLI migration runner
+├── middleware/
+│   └── auth.js        → JWT verify
+└── routes/
+    ├── auth.js        → /auth/*
+    ├── cards.js       → /cards/*
+    └── collected.js   → /collected/*
+vercel.json            → Vercel config
+.env.example           → copy to .env for local dev
+```
+
+---
+
+## 🗄️ Step 1 — Run Schema on Neon
+
+Go to [console.neon.tech](https://console.neon.tech) → SQL Editor → paste `src/db/schema.sql` → Run.
+
+OR via CLI:
+```bash
+npm install
+cp .env.example .env   # fill in DATABASE_URL + JWT_SECRET
+node src/db/migrate.js
+```
+
+---
+
+## 🚀 Step 2 — Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel        # follow prompts
+vercel --prod # production deploy
+```
+
+Set these env vars in Vercel Dashboard → Settings → Environment Variables:
+```
+DATABASE_URL = postgresql://neondb_owner:PASS@ep-xxx.neon.tech/neondb?sslmode=require
+JWT_SECRET   = your_long_random_secret
+NODE_ENV     = production
+```
+
+---
+
+## 📱 Step 3 — Update Flutter
+
+```dart
+// lib/services/api_client.dart
+static const String baseUrl = 'https://your-project.vercel.app';
+```
+
+---
+
+## 🔌 API Routes
+
+| Method | Route | Auth | Description |
+|---|---|---|---|
+| GET | /health | ❌ | Health check |
+| POST | /auth/register | ❌ | Register |
+| POST | /auth/login | ❌ | Login |
+| GET | /auth/me | ✅ | Get profile |
+| PUT | /auth/password | ✅ | Change password |
+| POST | /auth/forgot-password | ❌ | Reset request |
+| GET | /cards | ✅ | My cards list |
+| POST | /cards | ✅ | Create card (max 5) |
+| GET | /cards/:id | ✅ | Get card |
+| PUT | /cards/:id | ✅ | Update card |
+| DELETE | /cards/:id | ✅ | Delete card |
+| GET | /collected | ✅ | Collected list |
+| POST | /collected | ✅ | Save scanned card |
+| GET | /collected/:id | ✅ | Get collected |
+| PUT | /collected/:id | ✅ | Update tags/remarks |
+| DELETE | /collected/:id | ✅ | Delete collected |
+
+
 # 🃏 Carded Backend — Express.js API
 
 REST API for the Carded app. Uses the **file system** for storage (JSON files per user). Ready to deploy on Render.
