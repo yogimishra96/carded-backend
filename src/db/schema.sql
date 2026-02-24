@@ -93,3 +93,14 @@ CREATE TRIGGER set_collected_updated_at
 -- ─── Add photo_url to cards (run if tables already exist) ────
 ALTER TABLE cards ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT '';
 ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEFAULT '';
+
+-- Write your SQL query here
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  user_id              UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  token                TEXT NOT NULL,
+  expires_at           TIMESTAMPTZ NOT NULL,
+  used                 BOOLEAN NOT NULL DEFAULT false,
+  reset_token          TEXT,
+  reset_token_expires  TIMESTAMPTZ,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
