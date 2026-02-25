@@ -97,10 +97,26 @@ ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS photo_url TEXT NOT NULL DEF
 -- Write your SQL query here
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
   user_id              UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  token                TEXT NOT NULL,
+  token                TEXT NOT NULL,           -- 6-digit OTP
   expires_at           TIMESTAMPTZ NOT NULL,
   used                 BOOLEAN NOT NULL DEFAULT false,
-  reset_token          TEXT,
+  reset_token          TEXT,                    -- after OTP verify
   reset_token_expires  TIMESTAMPTZ,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ─── Google Sign-In support ───────────────────────────────────
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id   TEXT UNIQUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url  TEXT;
+-- phone ko optional banao for google users
+ALTER TABLE users ALTER COLUMN phone SET DEFAULT '';
+
+-- ─── Google Sign-In support ───────────────────────────────────
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
+ALTER TABLE users ALTER COLUMN phone SET DEFAULT '';
+ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
+
+ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS scan_type TEXT NOT NULL DEFAULT 'carded';
+ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS card_image_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS qr_raw_data TEXT NOT NULL DEFAULT '';

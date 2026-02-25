@@ -2,6 +2,9 @@ const express    = require('express');
 const bcrypt     = require('bcryptjs');
 const crypto     = require('crypto');
 const nodemailer = require('nodemailer');
+const { OAuth2Client } = require('google-auth-library');
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '361653721496-5aag23ng26i55dr49j6438785d2ais6i.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 const { query }  = require('../db/pool');
 const { authMiddleware, signToken } = require('../middleware/auth');
 
@@ -271,4 +274,132 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
+// ─── POST /auth/google ─────────────────────────────────────
+router.post('/google', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ success: false, message: 'idToken required' });
+
+    // Verify token with Google
+    const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    const { sub: googleId, email, name, picture } = payload;
+
+    if (!email) return res.status(400).json({ success: false, message: 'Email not found in Google account' });
+
+    // Check if user exists (by google_id or email)
+    let result = await query(
+      'SELECT * FROM users WHERE google_id = $1 OR email = $2 LIMIT 1',
+      [googleId, email.toLowerCase()]
+    );
+
+    let user;
+    if (result.rowCount > 0) {
+      // Existing user — update google_id if not set
+      user = result.rows[0];
+      if (!user.google_id) {
+        await query('UPDATE users SET google_id = $1, avatar_url = $2 WHERE id = $3',
+          [googleId, picture, user.id]);
+      }
+    } else {
+      // New user — create account
+      const newUser = await query(
+        `INSERT INTO users (full_name, email, phone, password_hash, google_id, avatar_url)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, full_name, email, phone`,
+        [name, email.toLowerCase(), '', '', googleId, picture || '']
+      );
+      user = newUser.rows[0];
+    }
+
+    const token = signToken(user.id);
+    return res.json({
+      success: true, token,
+      user: { id: user.id, fullName: user.full_name, email: user.email, phone: user.phone || '' },
+    });
+  } catch (err) {
+    console.error('Google auth:', err);
+    return res.status(500).json({ success: false, message: 'Google authentication failed' });
+  }
+});
+
 module.exports = router;
+
+// ─── POST /auth/google ────────────────────────────────────────
+// Flutter Google Sign-In se idToken aata hai
+// Backend verify karta hai aur JWT return karta hai
+
+
+router.post('/google', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken)
+      return res.status(400).json({ success: false, message: 'Google ID token required' });
+
+    // Google se token verify karo
+    const client  = new OAuth2Client(GOOGLE_CLIENT_ID);
+    const ticket  = await client.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const payload = ticket.getPayload();
+
+    if (!payload || !payload.email)
+      return res.status(401).json({ success: false, message: 'Invalid Google token' });
+
+    const { email, name, sub: googleId } = payload;
+
+    // Check karo user exist karta hai ya nahi
+    let userResult = await query(
+      'SELECT id, full_name, email, phone FROM users WHERE email = $1 LIMIT 1',
+      [email.toLowerCase()]
+    );
+
+    let user;
+
+    if (userResult.rowCount > 0) {
+      // Existing user — sirf login karo
+      user = userResult.rows[0];
+
+      // google_id update karo agar nahi hai
+      await query(
+        'UPDATE users SET google_id = $1 WHERE id = $2',
+        [googleId, user.id]
+      );
+    } else {
+      // New user — auto register karo
+      // Phone blank rahega — Google se nahi milta
+      const insertResult = await query(
+        `INSERT INTO users (full_name, email, phone, password_hash, google_id)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, full_name, email, phone`,
+        [
+          name || email.split('@')[0],
+          email.toLowerCase(),
+          '',           // phone blank
+          '',           // password_hash blank — Google user ko password nahi chahiye
+          googleId,
+        ]
+      );
+      user = insertResult.rows[0];
+    }
+
+    const token = signToken(user.id);
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id:       user.id,
+        fullName: user.full_name,
+        email:    user.email,
+        phone:    user.phone || '',
+      },
+    });
+  } catch (err) {
+    console.error('Google auth:', err);
+    if (err.message?.includes('Token used too late') || err.message?.includes('Invalid token')) {
+      return res.status(401).json({ success: false, message: 'Google token expired or invalid' });
+    }
+    return res.status(500).json({ success: false, message: 'Google sign-in failed' });
+  }
+});
