@@ -1,7 +1,6 @@
 const express    = require('express');
 const cloudinary = require('cloudinary').v2;
 const multer     = require('multer');
-const fs         = require('fs');
 const { query }  = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
 
@@ -14,13 +13,21 @@ cloudinary.config({
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
-// ─── Multer (temp disk) ───────────────────────────────────────
+
+
+// ─── Multer (memory storage) ──────────────────────────────────
 const upload = multer({
-  dest: '/tmp/carded-uploads/',
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (_, file, cb) => {
-    if (['image/jpeg','image/png','image/webp'].includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Only JPEG/PNG/WEBP allowed'));
+    const mime = (file.mimetype || '').toLowerCase();
+    const name = (file.originalname || '').toLowerCase();
+    const okMime = mime.startsWith('image/') || mime === 'application/octet-stream';
+    const okExt  = name.endsWith('.jpg') || name.endsWith('.jpeg') ||
+                   name.endsWith('.png') || name.endsWith('.webp');
+    console.log(`[multer] file=${name} mime=${mime} accepted=${okMime || okExt}`);
+    if (okMime || okExt) cb(null, true);
+    else cb(new Error(`Unsupported type: ${mime}`));
   },
 });
 
@@ -145,13 +152,26 @@ router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
     if (!name)
       return res.status(400).json({ success: false, message: 'name is required' });
 
-    // Upload to Cloudinary
-    const cloudRes = await cloudinary.uploader.upload(req.file.path, {
-      folder:        'carded/physical-cards',
-      public_id:     `card_${req.userId}_${Date.now()}`,
-      resource_type: 'image',
+    console.log('[photo-card] uploading to cloudinary, size:', req.file.size);
+
+    // Upload buffer directly to Cloudinary — no disk file needed
+    const cloudRes = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        {
+          folder:        'carded/physical-cards',
+          public_id:     `card_${req.userId}_${Date.now()}`,
+          resource_type: 'image',
+          format:        'jpg',   // force jpg regardless of incoming mime
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      stream.end(req.file.buffer);
     });
-    fs.unlinkSync(req.file.path); // cleanup temp
+
+    console.log('[photo-card] cloudinary url:', cloudRes.secure_url);
 
     const autoName = await genAutoName(req.userId);
 
@@ -162,15 +182,14 @@ router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,'photo_card')
        RETURNING *`,
       [req.userId, autoName, name,
-       req.body.designation||'', req.body.company||'',
+       req.body.designation || '', req.body.company || '',
        cloudRes.secure_url]
     );
 
     return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
-    if (req.file?.path) try { fs.unlinkSync(req.file.path); } catch(_) {}
-    console.error('Photo card upload:', err);
-    return res.status(500).json({ success: false, message: 'Upload failed' });
+    console.error('[photo-card] ERROR:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Upload failed' });
   }
 });
 
