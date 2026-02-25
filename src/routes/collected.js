@@ -1,12 +1,42 @@
-const express = require('express');
-const { query } = require('../db/pool');
+const express    = require('express');
+const cloudinary = require('cloudinary').v2;
+const multer     = require('multer');
+const fs         = require('fs');
+const { query }  = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
-
 router.use(authMiddleware);
 
-// ─── Helper: map DB row → API response shape ──────────────────
+// ─── Cloudinary config ────────────────────────────────────────
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key:    process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+// ─── Multer (temp disk) ───────────────────────────────────────
+const upload = multer({
+  dest: '/tmp/carded-uploads/',
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (_, file, cb) => {
+    if (['image/jpeg','image/png','image/webp'].includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG/PNG/WEBP allowed'));
+  },
+});
+
+// ─── Helper: auto-name generator ─────────────────────────────
+async function genAutoName(userId) {
+  const now  = new Date();
+  const dd   = String(now.getDate()).padStart(2, '0');
+  const mm   = String(now.getMonth() + 1).padStart(2, '0');
+  const yyyy = now.getFullYear();
+  const countRes = await query(
+    'SELECT COUNT(*) FROM collected_cards WHERE user_id = $1', [userId]);
+  const n = parseInt(countRes.rows[0].count) + 1;
+  return `${dd}-${mm}-${yyyy} (${n})`;
+}
+
+// ─── Helper: DB row → response ────────────────────────────────
 function toCollected(row) {
   return {
     id:            row.id,
@@ -24,137 +54,206 @@ function toCollected(row) {
     category:      row.category,
     leadType:      row.lead_type,
     remarks:       row.remarks,
+    scanType:      row.scan_type    || 'carded',
+    cardImageUrl:  row.card_image_url || '',
+    qrRawData:     row.qr_raw_data  || '',
+    photoUrl:      row.photo_url    || '',
     scannedAt:     row.scanned_at,
     updatedAt:     row.updated_at,
   };
 }
 
-// ─── GET /collected ───────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// GET /collected
+// ═══════════════════════════════════════════════════════════════
 router.get('/', async (req, res) => {
   try {
-    const result = await query(
-      'SELECT * FROM collected_cards WHERE user_id = $1 ORDER BY scanned_at DESC',
-      [req.userId]
-    );
+    // Optional filter: ?type=carded | photo_card | qr_other
+    const { type } = req.query;
+    let sql    = 'SELECT * FROM collected_cards WHERE user_id = $1';
+    const args = [req.userId];
+    if (type) { sql += ' AND scan_type = $2'; args.push(type); }
+    sql += ' ORDER BY scanned_at DESC';
+    const result = await query(sql, args);
     return res.json({ success: true, collected: result.rows.map(toCollected) });
   } catch (err) {
-    console.error('Get collected error:', err);
+    console.error('Get collected:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// ─── GET /collected/:id ───────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// GET /collected/:id
+// ═══════════════════════════════════════════════════════════════
 router.get('/:id', async (req, res) => {
   try {
     const result = await query(
       'SELECT * FROM collected_cards WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'Collected card not found' });
-    }
+    if (result.rowCount === 0)
+      return res.status(404).json({ success: false, message: 'Not found' });
     return res.json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
-    console.error('Get collected card error:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// ─── POST /collected ──────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// POST /collected
+// Type 1: Carded QR scan — full card data from QR JSON
+// ═══════════════════════════════════════════════════════════════
 router.post('/', async (req, res) => {
   try {
     const { name, designation, company, email1, email2,
-            phone1, phone2, website, address, templateIndex } = req.body;
+            phone1, phone2, website, address, templateIndex, photoUrl } = req.body;
 
-    if (!name) {
+    if (!name)
       return res.status(400).json({ success: false, message: 'name is required' });
-    }
 
-    // Generate auto-name: dd-mm-yyyy (N)
-    const now = new Date();
-    const dd  = String(now.getDate()).padStart(2, '0');
-    const mm  = String(now.getMonth() + 1).padStart(2, '0');
-    const yyyy = now.getFullYear();
-
-    const countRes = await query(
-      'SELECT COUNT(*) FROM collected_cards WHERE user_id = $1',
-      [req.userId]
-    );
-    const n = parseInt(countRes.rows[0].count) + 1;
-    const autoName = `${dd}-${mm}-${yyyy} (${n})`;
+    const autoName = await genAutoName(req.userId);
 
     const result = await query(
       `INSERT INTO collected_cards
          (user_id, auto_name, name, designation, company,
-          email1, email2, phone1, phone2, website, address, template_index)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          email1, email2, phone1, phone2, website, address,
+          template_index, photo_url, scan_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'carded')
        RETURNING *`,
-      [
-        req.userId,
-        autoName,
-        name,
-        designation || '',
-        company || '',
-        email1 || '',
-        email2 || '',
-        phone1 || '',
-        phone2 || '',
-        website || '',
-        address || '',
-        templateIndex ?? 0,
-      ]
+      [req.userId, autoName, name, designation||'', company||'',
+       email1||'', email2||'', phone1||'', phone2||'',
+       website||'', address||'', templateIndex??0, photoUrl||'']
     );
 
     return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
-    console.error('Create collected error:', err);
+    console.error('Create collected:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// ─── PUT /collected/:id  (only category, leadType, remarks) ──
+// ═══════════════════════════════════════════════════════════════
+// POST /collected/photo-card
+// Type 2: Physical card photo — upload to Cloudinary
+// ═══════════════════════════════════════════════════════════════
+router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
+  try {
+    if (!req.file)
+      return res.status(400).json({ success: false, message: 'Card image required' });
+
+    const { name } = req.body;
+    if (!name)
+      return res.status(400).json({ success: false, message: 'name is required' });
+
+    // Upload to Cloudinary
+    const cloudRes = await cloudinary.uploader.upload(req.file.path, {
+      folder:        'carded/physical-cards',
+      public_id:     `card_${req.userId}_${Date.now()}`,
+      resource_type: 'image',
+    });
+    fs.unlinkSync(req.file.path); // cleanup temp
+
+    const autoName = await genAutoName(req.userId);
+
+    const result = await query(
+      `INSERT INTO collected_cards
+         (user_id, auto_name, name, designation, company,
+          card_image_url, scan_type)
+       VALUES ($1,$2,$3,$4,$5,$6,'photo_card')
+       RETURNING *`,
+      [req.userId, autoName, name,
+       req.body.designation||'', req.body.company||'',
+       cloudRes.secure_url]
+    );
+
+    return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
+  } catch (err) {
+    if (req.file?.path) try { fs.unlinkSync(req.file.path); } catch(_) {}
+    console.error('Photo card upload:', err);
+    return res.status(500).json({ success: false, message: 'Upload failed' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// POST /collected/qr-other
+// Type 3: Any QR code (URL, vCard, plain text, etc.)
+// ═══════════════════════════════════════════════════════════════
+router.post('/qr-other', async (req, res) => {
+  try {
+    const { name, qrRawData, parsedData } = req.body;
+
+    if (!name)
+      return res.status(400).json({ success: false, message: 'name is required' });
+    if (!qrRawData)
+      return res.status(400).json({ success: false, message: 'qrRawData is required' });
+
+    const autoName = await genAutoName(req.userId);
+
+    // parsedData can have: website, phone1, email1, etc. from vCard parse
+    const p = parsedData || {};
+
+    const result = await query(
+      `INSERT INTO collected_cards
+         (user_id, auto_name, name, designation, company,
+          email1, phone1, website, qr_raw_data, scan_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'qr_other')
+       RETURNING *`,
+      [req.userId, autoName, name,
+       p.designation||'', p.company||'',
+       p.email||'', p.phone||'',
+       p.website||qrRawData,   // agar URL hai toh website mein save
+       qrRawData]
+    );
+
+    return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
+  } catch (err) {
+    console.error('QR other save:', err);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PUT /collected/:id
+// ═══════════════════════════════════════════════════════════════
 router.put('/:id', async (req, res) => {
   try {
     const existing = await query(
       'SELECT id FROM collected_cards WHERE id = $1 AND user_id = $2',
       [req.params.id, req.userId]
     );
-    if (existing.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'Collected card not found' });
-    }
+    if (existing.rowCount === 0)
+      return res.status(404).json({ success: false, message: 'Not found' });
 
-    const { category, leadType, remarks } = req.body;
-
+    const { category, leadType, remarks, name } = req.body;
     const result = await query(
       `UPDATE collected_cards SET
          category  = COALESCE($1, category),
          lead_type = COALESCE($2, lead_type),
-         remarks   = COALESCE($3, remarks)
-       WHERE id = $4 AND user_id = $5
+         remarks   = COALESCE($3, remarks),
+         name      = COALESCE($4, name)
+       WHERE id = $5 AND user_id = $6
        RETURNING *`,
-      [category, leadType, remarks, req.params.id, req.userId]
+      [category, leadType, remarks, name, req.params.id, req.userId]
     );
-
     return res.json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
-    console.error('Update collected error:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
-// ─── DELETE /collected/:id ────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// DELETE /collected/:id
+// ═══════════════════════════════════════════════════════════════
 router.delete('/:id', async (req, res) => {
   try {
     const result = await query(
       'DELETE FROM collected_cards WHERE id = $1 AND user_id = $2 RETURNING id',
       [req.params.id, req.userId]
     );
-    if (result.rowCount === 0) {
-      return res.status(404).json({ success: false, message: 'Collected card not found' });
-    }
-    return res.json({ success: true, message: 'Collected card deleted' });
+    if (result.rowCount === 0)
+      return res.status(404).json({ success: false, message: 'Not found' });
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Delete collected error:', err);
     return res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
