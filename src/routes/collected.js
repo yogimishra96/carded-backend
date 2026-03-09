@@ -7,31 +7,26 @@ const { authMiddleware } = require('../middleware/auth');
 const router = express.Router();
 router.use(authMiddleware);
 
-// ─── Cloudinary config ────────────────────────────────────────
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key:    process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-
-// ─── Multer (memory storage) ──────────────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits:  { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits:  { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_, file, cb) => {
     const mime = (file.mimetype || '').toLowerCase();
     const name = (file.originalname || '').toLowerCase();
     const okMime = mime.startsWith('image/') || mime === 'application/octet-stream';
     const okExt  = name.endsWith('.jpg') || name.endsWith('.jpeg') ||
                    name.endsWith('.png') || name.endsWith('.webp');
-    console.log(`[multer] file=${name} mime=${mime} accepted=${okMime || okExt}`);
     if (okMime || okExt) cb(null, true);
     else cb(new Error(`Unsupported type: ${mime}`));
   },
 });
 
-// ─── Helper: auto-name generator ─────────────────────────────
 async function genAutoName(userId) {
   const now  = new Date();
   const dd   = String(now.getDate()).padStart(2, '0');
@@ -43,39 +38,35 @@ async function genAutoName(userId) {
   return `${dd}-${mm}-${yyyy} (${n})`;
 }
 
-// ─── Helper: DB row → response ────────────────────────────────
 function toCollected(row) {
   return {
     id:            row.id,
     autoName:      row.auto_name,
     name:          row.name,
-    designation:   row.designation,
-    company:       row.company,
-    email1:        row.email1,
-    email2:        row.email2,
-    phone1:        row.phone1,
-    phone2:        row.phone2,
-    website:       row.website,
-    address:       row.address,
-    templateIndex: row.template_index,
-    category:      row.category,
-    leadType:      row.lead_type,
-    remarks:       row.remarks,
-    scanType:      row.scan_type    || 'carded',
+    designation:   row.designation   || '',
+    company:       row.company       || '',
+    email1:        row.email1        || '',
+    email2:        row.email2        || '',
+    phone1:        row.phone1        || '',
+    phone2:        row.phone2        || '',
+    website:       row.website       || '',
+    address:       row.address       || '',
+    templateIndex: row.template_index || 0,
+    category:      row.category      || '',
+    leadType:      row.lead_type     || '',
+    remarks:       row.remarks       || '',
+    scanType:      row.scan_type     || 'carded',
     cardImageUrl:  row.card_image_url || '',
-    qrRawData:     row.qr_raw_data  || '',
-    photoUrl:      row.photo_url    || '',
+    qrRawData:     row.qr_raw_data   || '',
+    photoUrl:      row.photo_url     || '',
     scannedAt:     row.scanned_at,
     updatedAt:     row.updated_at,
   };
 }
 
-// ═══════════════════════════════════════════════════════════════
 // GET /collected
-// ═══════════════════════════════════════════════════════════════
 router.get('/', async (req, res) => {
   try {
-    // Optional filter: ?type=carded | photo_card | qr_other
     const { type } = req.query;
     let sql    = 'SELECT * FROM collected_cards WHERE user_id = $1';
     const args = [req.userId];
@@ -89,9 +80,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
 // GET /collected/:id
-// ═══════════════════════════════════════════════════════════════
 router.get('/:id', async (req, res) => {
   try {
     const result = await query(
@@ -106,10 +95,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// POST /collected
-// Type 1: Carded QR scan — full card data from QR JSON
-// ═══════════════════════════════════════════════════════════════
+// POST /collected — Carded QR scan
 router.post('/', async (req, res) => {
   try {
     const { name, designation, company, email1, email2,
@@ -119,7 +105,6 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, message: 'name is required' });
 
     const autoName = await genAutoName(req.userId);
-
     const result = await query(
       `INSERT INTO collected_cards
          (user_id, auto_name, name, designation, company,
@@ -131,7 +116,6 @@ router.post('/', async (req, res) => {
        email1||'', email2||'', phone1||'', phone2||'',
        website||'', address||'', templateIndex??0, photoUrl||'']
     );
-
     return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
     console.error('Create collected:', err);
@@ -139,29 +123,27 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// POST /collected/photo-card
-// Type 2: Physical card photo — upload to Cloudinary
-// ═══════════════════════════════════════════════════════════════
+// POST /collected/photo-card — Physical card photo + OCR fields
 router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
   try {
     if (!req.file)
       return res.status(400).json({ success: false, message: 'Card image required' });
 
-    const { name } = req.body;
+    const { name, designation, company, email1, email2,
+            phone1, phone2, website, address } = req.body;
+
     if (!name)
       return res.status(400).json({ success: false, message: 'name is required' });
 
     console.log('[photo-card] uploading to cloudinary, size:', req.file.size);
 
-    // Upload buffer directly to Cloudinary — no disk file needed
     const cloudRes = await new Promise((resolve, reject) => {
       const stream = cloudinary.uploader.upload_stream(
         {
           folder:        'carded/physical-cards',
           public_id:     `card_${req.userId}_${Date.now()}`,
           resource_type: 'image',
-          format:        'jpg',   // force jpg regardless of incoming mime
+          format:        'jpg',
         },
         (error, result) => {
           if (error) reject(error);
@@ -178,12 +160,23 @@ router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
     const result = await query(
       `INSERT INTO collected_cards
          (user_id, auto_name, name, designation, company,
+          email1, email2, phone1, phone2, website, address,
           card_image_url, scan_type)
-       VALUES ($1,$2,$3,$4,$5,$6,'photo_card')
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'photo_card')
        RETURNING *`,
-      [req.userId, autoName, name,
-       req.body.designation || '', req.body.company || '',
-       cloudRes.secure_url]
+      [
+        req.userId, autoName,
+        name,
+        designation || '',
+        company     || '',
+        email1      || '',
+        email2      || '',
+        phone1      || '',
+        phone2      || '',
+        website     || '',
+        address     || '',
+        cloudRes.secure_url,
+      ]
     );
 
     return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
@@ -193,10 +186,7 @@ router.post('/photo-card', upload.single('cardImage'), async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
 // POST /collected/qr-other
-// Type 3: Any QR code (URL, vCard, plain text, etc.)
-// ═══════════════════════════════════════════════════════════════
 router.post('/qr-other', async (req, res) => {
   try {
     const { name, qrRawData, parsedData } = req.body;
@@ -207,8 +197,6 @@ router.post('/qr-other', async (req, res) => {
       return res.status(400).json({ success: false, message: 'qrRawData is required' });
 
     const autoName = await genAutoName(req.userId);
-
-    // parsedData can have: website, phone1, email1, etc. from vCard parse
     const p = parsedData || {};
 
     const result = await query(
@@ -220,10 +208,9 @@ router.post('/qr-other', async (req, res) => {
       [req.userId, autoName, name,
        p.designation||'', p.company||'',
        p.email||'', p.phone||'',
-       p.website||qrRawData,   // agar URL hai toh website mein save
+       p.website||qrRawData,
        qrRawData]
     );
-
     return res.status(201).json({ success: true, card: toCollected(result.rows[0]) });
   } catch (err) {
     console.error('QR other save:', err);
@@ -231,9 +218,7 @@ router.post('/qr-other', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
 // PUT /collected/:id
-// ═══════════════════════════════════════════════════════════════
 router.put('/:id', async (req, res) => {
   try {
     const existing = await query(
@@ -260,9 +245,7 @@ router.put('/:id', async (req, res) => {
   }
 });
 
-// ═══════════════════════════════════════════════════════════════
 // DELETE /collected/:id
-// ═══════════════════════════════════════════════════════════════
 router.delete('/:id', async (req, res) => {
   try {
     const result = await query(
