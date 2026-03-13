@@ -4,6 +4,7 @@ const multer     = require('multer');
 const { query }  = require('../db/pool');
 const { authMiddleware } = require('../middleware/auth');
 
+
 const router = express.Router();
 router.use(authMiddleware);
 
