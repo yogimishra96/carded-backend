@@ -6,6 +6,7 @@ const authRoutes      = require('./routes/auth');
 const cardsRoutes     = require('./routes/cards');
 const collectedRoutes = require('./routes/collected');
 
+// ─── Swagger ──────────────────────────────────────────────────
 const swaggerUi   = require('swagger-ui-express');
 const swaggerSpec = require('./swagger');
 
@@ -21,7 +22,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ─── Swagger ─────────────────────────────────────────────────
+// ─── Swagger UI ───────────────────────────────────────────────
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
   customSiteTitle: 'Carded API Docs',
   swaggerOptions: { persistAuthorization: true },
@@ -49,7 +50,7 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ success: false, message: 'Internal server error' });
 });
 
-// ─── Start (local dev only — Vercel uses module.exports) ──────
+// ─── Start (local only) ───────────────────────────────────────
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
