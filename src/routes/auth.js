@@ -2,6 +2,7 @@ const express    = require('express');
 const bcrypt     = require('bcryptjs');
 const crypto     = require('crypto');
 const nodemailer = require('nodemailer');
+require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1055325279796-191okpte9cbuuf6n2fj4fecr1e5vq5i1.apps.googleusercontent.com';
 const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
