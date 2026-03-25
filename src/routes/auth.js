@@ -4,8 +4,9 @@ const crypto     = require('crypto');
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 const { OAuth2Client } = require('google-auth-library');
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1055325279796-191okpte9cbuuf6n2fj4fecr1e5vq5i1.apps.googleusercontent.com';
-const googleClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+const GOOGLE_WEB_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '1055325279796-191okpte9cbuuf6n2fj4fecr1e5vq5i1.apps.googleusercontent.com';
+const GOOGLE_ANDROID_CLIENT_ID = process.env.GOOGLE_ANDROID_CLIENT_ID || '1055325279796-fk31vnfnug5289hk3h1jutb73ver3e29.apps.googleusercontent.com';
+const googleClient = new OAuth2Client(GOOGLE_WEB_CLIENT_ID);
 const { query }  = require('../db/pool');
 const { authMiddleware, signToken } = require('../middleware/auth');
 
@@ -278,13 +279,47 @@ router.post('/reset-password', async (req, res) => {
 // ─── POST /auth/google ─────────────────────────────────────
 router.post('/google', async (req, res) => {
   try {
-    const { idToken } = req.body;
-    if (!idToken) return res.status(400).json({ success: false, message: 'idToken required' });
+    const { idToken, accessToken } = req.body;
+    if (!idToken && !accessToken) {
+      return res.status(400).json({ success: false, message: 'idToken or accessToken required' });
+    }
 
-    // Verify token with Google
-    const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
-    const payload = ticket.getPayload();
-    const { sub: googleId, email, name, picture } = payload;
+    let googleId, email, name, picture;
+
+    // Strategy 1: Verify Google ID token
+    let idTokenVerified = false;
+    if (idToken) {
+      try {
+        const ticket = await googleClient.verifyIdToken({ idToken, audience: [GOOGLE_WEB_CLIENT_ID, GOOGLE_ANDROID_CLIENT_ID] });
+        const payload = ticket.getPayload();
+        ({ sub: googleId, email, name, picture } = payload);
+        idTokenVerified = true;
+      } catch (idErr) {
+        console.warn('Google idToken verification failed:', idErr.message);
+      }
+    }
+
+    // Strategy 2: Fallback — verify via accessToken using Google userinfo API
+    if (!idTokenVerified && accessToken) {
+      console.log('Falling back to accessToken verification via Google userinfo API');
+      const resp = await fetch(`https://www.googleapis.com/oauth2/v3/userinfo`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!resp.ok) {
+        const errText = await resp.text();
+        console.error('Google userinfo API failed:', resp.status, errText);
+        return res.status(401).json({ success: false, message: 'Invalid Google tokens' });
+      }
+      const info = await resp.json();
+      googleId = info.sub;
+      email    = info.email;
+      name     = info.name;
+      picture  = info.picture;
+    }
+
+    if (!idTokenVerified && !accessToken) {
+      return res.status(401).json({ success: false, message: 'Google token verification failed' });
+    }
 
     if (!email) return res.status(400).json({ success: false, message: 'Email not found in Google account' });
 
