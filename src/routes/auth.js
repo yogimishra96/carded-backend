@@ -340,10 +340,10 @@ router.post('/google', async (req, res) => {
     } else {
       // New user — create account
       const newUser = await query(
-        `INSERT INTO users (full_name, email, phone, password_hash, google_id, avatar_url)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO users (full_name, email, google_id, avatar_url)
+         VALUES ($1, $2, $3, $4)
          RETURNING id, full_name, email, phone`,
-        [name, email.toLowerCase(), '', '', googleId, picture || '']
+        [name, email.toLowerCase(), googleId, picture || '']
       );
       user = newUser.rows[0];
     }
@@ -354,8 +354,8 @@ router.post('/google', async (req, res) => {
       user: { id: user.id, fullName: user.full_name, email: user.email, phone: user.phone || '' },
     });
   } catch (err) {
-    console.error('Google auth:', err);
-    return res.status(500).json({ success: false, message: 'Google authentication failed' });
+    console.error('Google auth error:', err.message, err.stack);
+    return res.status(500).json({ success: false, message: 'Google authentication failed: ' + err.message });
   }
 });
 

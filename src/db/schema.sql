@@ -106,15 +106,18 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 );
 
 -- ─── Google Sign-In support ───────────────────────────────────
-ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id   TEXT UNIQUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id   TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url  TEXT;
--- phone ko optional banao for google users
 ALTER TABLE users ALTER COLUMN phone SET DEFAULT '';
-
--- ─── Google Sign-In support ───────────────────────────────────
-ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id TEXT;
-ALTER TABLE users ALTER COLUMN phone SET DEFAULT '';
+ALTER TABLE users ALTER COLUMN phone DROP NOT NULL;
 ALTER TABLE users ALTER COLUMN password_hash SET DEFAULT '';
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+-- Drop the original UNIQUE constraint on phone so multiple Google users can have empty phone
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_phone_key;
+-- Partial unique indexes: only enforce uniqueness for non-empty values
+DROP INDEX IF EXISTS idx_users_phone_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone_unique ON users(phone) WHERE phone IS NOT NULL AND phone <> '';
+DROP INDEX IF EXISTS idx_users_google_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL;
 
 ALTER TABLE collected_cards ADD COLUMN IF NOT EXISTS scan_type TEXT NOT NULL DEFAULT 'carded';

@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
-    rejectUnauthorized: false, // Required for Neon
+    rejectUnauthorized: false, // Required for Neon / Supabase
   },
   max: 10,
   idleTimeoutMillis: 30000,
